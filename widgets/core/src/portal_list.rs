@@ -3290,6 +3290,9 @@ impl Widget for PortalList {
             }
             _ => {}
         }
+        // A press the scroll bar took is a drag of the bar, not of a row: a
+        // row under it scrolling away mustn't cancel the drag.
+        let presses = if event.pointer_claimed_area() == self.scroll_bar.area() { Vec::new() } else { presses };
         for (abs, digit) in presses {
             let row = self
                 .items
