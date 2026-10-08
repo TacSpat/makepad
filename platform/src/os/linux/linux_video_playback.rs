@@ -297,6 +297,11 @@ pub struct GStreamerVideoPlayer {
     /// Previous present sample (one frame behind). Keeps the on-screen texture out
     /// of the GStreamer pool for an extra frame so 4K reuse cannot tear/ghost.
     retained_gl_sample_prev: *mut GstSample,
+    /// The frame the pipeline prerolled on, kept from the prepare (which
+    /// pulls it for the dimensions; appsink hands it out once) and presented
+    /// by the next `poll_frame`: a prepared video shows its first frame
+    /// before it plays (an idle thumbnail, an HTML `preload` poster).
+    preroll_sample: *mut GstSample,
     /// Last GLMemory frame was `TEXTURE_2D` (vs `EXTERNAL_OES`).
     gl_memory_tex_2d: bool,
     /// Last buffered ranges we reported (for change detection).
@@ -677,6 +682,7 @@ impl GStreamerVideoPlayer {
             yuv_matrix: 0.0,
             retained_gl_sample: std::ptr::null_mut(),
             retained_gl_sample_prev: std::ptr::null_mut(),
+            preroll_sample: std::ptr::null_mut(),
             gl_memory_tex_2d: false,
             last_buffered: Vec::new(),
             pause_muted: false,
@@ -1573,6 +1579,12 @@ impl GStreamerVideoPlayer {
     }
 
     fn destroy_pipeline(&mut self) {
+        if !self.preroll_sample.is_null() {
+            unsafe {
+                ((*self.gst).gst_mini_object_unref)(self.preroll_sample as *mut GstMiniObject);
+            }
+            self.preroll_sample = std::ptr::null_mut();
+        }
         // Drop present-side keep-alives before tearing down the pipeline so we
         // never sample a GL/DMA texture whose GstBuffer is already gone.
         if !self.retained_gl_sample.is_null() || !self.retained_gl_sample_prev.is_null() {
@@ -1712,6 +1724,7 @@ impl GStreamerVideoPlayer {
             yuv_matrix: 0.0,
             retained_gl_sample: std::ptr::null_mut(),
             retained_gl_sample_prev: std::ptr::null_mut(),
+            preroll_sample: std::ptr::null_mut(),
             gl_memory_tex_2d: false,
             last_buffered: Vec::new(),
             pause_muted: false,
@@ -2164,7 +2177,16 @@ impl GStreamerVideoPlayer {
                 }
                 if !sample.is_null() {
                     self.extract_dims_from_sample(gst, sample);
-                    (gst.gst_mini_object_unref)(sample as *mut GstMiniObject);
+                    // System-memory frames can be kept for poll_frame to show;
+                    // zero-copy ones pin GL/DMA pool buffers, so they go.
+                    if self.caps_profile.is_gl_memory() || self.caps_profile.is_dmabuf() {
+                        (gst.gst_mini_object_unref)(sample as *mut GstMiniObject);
+                    } else {
+                        if !self.preroll_sample.is_null() {
+                            (gst.gst_mini_object_unref)(self.preroll_sample as *mut GstMiniObject);
+                        }
+                        self.preroll_sample = sample;
+                    }
                 }
             }
 
@@ -2604,8 +2626,17 @@ impl GStreamerVideoPlayer {
         }
 
         unsafe {
-            // Pull next decoded frame — non-blocking (timeout=0).
-            let sample = (gst.gst_app_sink_try_pull_sample)(self.video_sink, 0);
+            // Pull next decoded frame — non-blocking (timeout=0). Before
+            // playback the prerolled frame stands in (see `preroll_sample`).
+            let mut sample = (gst.gst_app_sink_try_pull_sample)(self.video_sink, 0);
+            if !self.preroll_sample.is_null() {
+                if sample.is_null() {
+                    sample = self.preroll_sample;
+                } else {
+                    (gst.gst_mini_object_unref)(self.preroll_sample as *mut GstMiniObject);
+                }
+                self.preroll_sample = std::ptr::null_mut();
+            }
             if sample.is_null() {
                 return false;
             }
