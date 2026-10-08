@@ -4193,8 +4193,14 @@ impl GStreamerVideoPlayer {
                 );
             }
 
-            // Keep playbin in sync so app-visible volume/mute stay correct.
-            if self.uses_playbin {
+            // Without our volume element, playbin's volume/mute is the only
+            // control. With it, leave playbin alone: playsink finds the
+            // pulsesink inside our bin through GstStreamVolume and forwards
+            // playbin's volume/mute to the sound server's stream, which is the
+            // app's volume in the system mixer. A pause (volume 0, muted) then
+            // silences the app system-wide, and PipeWire/PulseAudio restore
+            // that level for the app's next stream.
+            if self.uses_playbin && self.audio_volume.is_null() {
                 (gst.g_object_set_int)(
                     self.pipeline,
                     mute_prop.as_ptr(),
