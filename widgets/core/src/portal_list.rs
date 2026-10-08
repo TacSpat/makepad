@@ -1643,11 +1643,15 @@ impl PortalList {
         // create leading empty space when items don't fill the viewport or
         // misalign with the scroll origin. The default Align{x:0,y:0}
         // preserves prior top-left item behavior.
-        let layout = if vi == Vec2Index::Y {
+        let mut layout = if vi == Vec2Index::Y {
             Layout::flow_down().with_align_x(self.layout.align.x)
         } else {
             Layout::flow_right().with_align_y(self.layout.align.y)
         };
+        // An item may draw past its own edges (a toolbar hanging over the
+        // row above, a shadow): the list's own rect still clips it.
+        layout.clip_x = false;
+        layout.clip_y = false;
 
         if let Some(draw_state) = self.draw_state.get() {
             match draw_state {
