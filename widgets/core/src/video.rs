@@ -691,6 +691,11 @@ impl VideoRef {
 
     /// Returns the total duration of the video in milliseconds, or 0 if not yet known
     /// (the duration is reported by the platform once playback has been prepared).
+    /// The video's size in pixels once prepared (0×0 before, or for audio).
+    pub fn video_size(&self) -> (usize, usize) {
+        self.borrow().map_or((0, 0), |inner| (inner.video_width, inner.video_height))
+    }
+
     pub fn total_duration_ms(&self) -> u128 {
         if let Some(inner) = self.borrow() {
             inner.total_duration
