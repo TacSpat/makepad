@@ -194,9 +194,25 @@ impl CxOsApi for Cx {
             .as_secs_f64()
     }
 
-    fn open_url(&mut self, _url: &str, _in_place: OpenUrlInPlace) {
+    fn open_url(&mut self, url: &str, _in_place: OpenUrlInPlace) {
         if self.script_data.std.host_io_only() { return; }
-        crate::error!("open_url not implemented on this platform");
+        // The desktop's handler for the URL (the default browser for web
+        // links), as other Linux apps open them. Waited on in a thread so the
+        // child is reaped without blocking the UI.
+        let url = url.to_owned();
+        std::thread::spawn(move || {
+            let opened = std::process::Command::new("xdg-open")
+                .arg(&url)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            match opened {
+                Ok(status) if status.success() => {}
+                Ok(status) => crate::error!("open_url: xdg-open {url} exited with {status}"),
+                Err(e) => crate::error!("open_url: couldn't run xdg-open ({e})"),
+            }
+        });
     }
 }
 
