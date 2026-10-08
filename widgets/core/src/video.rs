@@ -696,6 +696,16 @@ impl VideoRef {
         self.borrow().map_or((0, 0), |inner| (inner.video_width, inner.video_height))
     }
 
+    /// Sets an `instance(..)` value of the picture's shader (`draw_bg`), say
+    /// one a template's own `pixel` reads. It stays until the template is
+    /// applied again, without touching the uniforms the frames set.
+    pub fn set_bg_instance(&self, cx: &mut Cx, id: LiveId, value: &[f32]) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.draw_bg.draw_vars.set_dyn_instance(cx, id, value);
+            inner.redraw(cx);
+        }
+    }
+
     pub fn total_duration_ms(&self) -> u128 {
         if let Some(inner) = self.borrow() {
             inner.total_duration
