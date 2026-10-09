@@ -712,8 +712,11 @@ impl XlibApp {
                         time: request.time,
                         property: request.property,
                     };
+                    let text_targets = [self.atoms.utf8_string, self.atoms.string, self.atoms.text, self.atoms.text_plain];
                     if request.target == self.atoms.targets {
-                        let mut targets = [self.atoms.utf8_string];
+                        // Every text form we serve (some apps ask for STRING
+                        // or text/plain only).
+                        let mut targets = [self.atoms.targets, self.atoms.utf8_string, self.atoms.string, self.atoms.text, self.atoms.text_plain];
                         x11_sys::XChangeProperty(
                             self.display,
                             request.requestor,
@@ -724,17 +727,18 @@ impl XlibApp {
                             targets.as_mut() as *mut _ as *mut c_uchar,
                             targets.len() as i32,
                         );
-                    } else if request.target == self.atoms.utf8_string {
+                    } else if text_targets.contains(&request.target) {
                         let text = if request.selection == self.atoms.primary {
                             &self.primary_selection
                         } else {
                             &self.clipboard
                         };
+                        let kind = if request.target == self.atoms.string { self.atoms.string } else { self.atoms.utf8_string };
                         x11_sys::XChangeProperty(
                             self.display,
                             request.requestor,
                             request.property,
-                            self.atoms.utf8_string,
+                            kind,
                             8,
                             x11_sys::PropModeReplace as i32,
                             text.as_ptr() as *const _ as *const c_uchar,
@@ -1758,7 +1762,9 @@ impl XlibAtoms {
                 ),
                 targets: x11_sys::XInternAtom(display, "TARGETS\0".as_ptr() as *const _, 0),
                 string: x11_sys::XInternAtom(display, "STRING\0".as_ptr() as *const _, 0),
-                utf8_string: x11_sys::XInternAtom(display, "UTF8_STRING\0".as_ptr() as *const _, 1),
+                // Created if missing: on a fresh X server (Xephyr) nothing has made it
+                // yet, and an atom of 0 left copied text unreadable.
+                utf8_string: x11_sys::XInternAtom(display, "UTF8_STRING\0".as_ptr() as *const _, 0),
                 atom: x11_sys::XInternAtom(display, "ATOM\0".as_ptr() as *const _, 0),
                 text: x11_sys::XInternAtom(display, "TEXT\0".as_ptr() as *const _, 0),
                 text_plain: x11_sys::XInternAtom(display, "text/plain\0".as_ptr() as *const _, 0),
