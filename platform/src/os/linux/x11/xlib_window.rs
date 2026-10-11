@@ -926,6 +926,27 @@ impl XlibWindow {
         }
     }
 
+    /// Tells the window manager the smallest inner size the user may resize to (WM_NORMAL_HINTS
+    /// PMinSize), in logical points scaled to device pixels like `set_inner_size`; `None`
+    /// lifts it. Replaces the creation hints, whose position no longer matters once mapped.
+    pub fn set_min_inner_size(&self, size: Option<Vec2d>) {
+        let Some(window) = self.window else {
+            return;
+        };
+        unsafe {
+            let display = get_xlib_app_global().display;
+            let mut hints = mem::zeroed::<x11_sys::XSizeHints>();
+            if let Some(size) = size {
+                let dpi = self.get_dpi_factor();
+                hints.flags = x11_sys::PMinSize;
+                hints.min_width = clamp_extent(size.x * dpi) as c_int;
+                hints.min_height = clamp_extent(size.y * dpi) as c_int;
+            }
+            x11_sys::XSetWMNormalHints(display, window, &mut hints);
+            x11_sys::XFlush(display);
+        }
+    }
+
     /// The window manager owns the decoration frame, so a client can only ask for its own
     /// extent; this is the inner size by another name.
     pub fn set_outer_size(&self, size: Vec2d) {

@@ -1406,6 +1406,10 @@ impl Window {
     pub fn resize(&self, cx: &mut Cx, size: Vec2d) {
         self.window.handle.resize(cx, size);
     }
+    /// See [`WindowHandle::set_min_inner_size`].
+    pub fn set_min_inner_size(&self, cx: &mut Cx, size: Option<Vec2d>) {
+        self.window.handle.set_min_inner_size(cx, size);
+    }
     pub fn reposition(&self, cx: &mut Cx, size: Vec2d) {
         self.window.handle.reposition(cx, size);
     }
@@ -1834,6 +1838,13 @@ impl WindowRef {
     pub fn resize(&self, cx: &mut Cx, size: Vec2d) {
         if let Some(inner) = self.borrow() {
             inner.resize(cx, size);
+        }
+    }
+
+    /// See [`WindowHandle::set_min_inner_size`].
+    pub fn set_min_inner_size(&self, cx: &mut Cx, size: Option<Vec2d>) {
+        if let Some(inner) = self.borrow() {
+            inner.set_min_inner_size(cx, size);
         }
     }
 

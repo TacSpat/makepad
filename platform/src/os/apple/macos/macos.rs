@@ -1926,6 +1926,8 @@ impl Cx {
                         metal_window.cocoa_window.set_window_buttons_visible(true);
                     }
                 }
+                // Not applied here yet (X11 and Wayland only).
+                CxOsOp::SetMinInnerSize(..) => {}
                 CxOsOp::SetTopmost(window_id, is_topmost) => {
                     if metal_windows.is_empty() {
                         if self.defer_platform_op(CxOsOp::SetTopmost(window_id, is_topmost)) {

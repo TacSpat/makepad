@@ -299,6 +299,10 @@ pub enum CxOsOp {
     HideWindowButtons(WindowId),
     ShowWindowButtons(WindowId),
     SetTopmost(WindowId, bool),
+    /// The smallest inner size the user may resize the window to, in the same logical
+    /// units as `ResizeWindow` (`None` lifts the limit). Applied by X11 and Wayland;
+    /// other backends ignore it for now.
+    SetMinInnerSize(WindowId, Option<Vec2d>),
     /// `true`: drop the native maximized-state border/titlebar strip a
     /// backend would otherwise keep (Windows only; other backends ignore
     /// it) so a maximized window reads as a clean fullscreen picture
@@ -510,6 +514,7 @@ impl std::fmt::Debug for CxOsOp {
             Self::HideWindowButtons(..) => write!(f, "HideWindowButtons"),
             Self::ShowWindowButtons(..) => write!(f, "ShowWindowButtons"),
             Self::SetTopmost(..) => write!(f, "SetTopmost"),
+            Self::SetMinInnerSize(..) => write!(f, "SetMinInnerSize"),
             Self::SetChromelessWhenMaximized(..) => write!(f, "SetChromelessWhenMaximized"),
             Self::SetWindowTitle(..) => write!(f, "SetWindowTitle"),
             Self::SetWindowVisuals(..) => write!(f, "SetWindowVisuals"),

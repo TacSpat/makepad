@@ -526,6 +526,7 @@ impl Cx {
                          CxOsOp::FullscreenWindow(_window_id) => {},
                          CxOsOp::NormalizeWindow(_window_id) => {}
                          CxOsOp::SetTopmost(_window_id, _is_topmost) => {}
+                         CxOsOp::SetMinInnerSize(..) => {}
                          CxOsOp::XrStartPresenting(_) => {},
                          CxOsOp::XrStopPresenting(_) => {},
                          CxOsOp::ShowTextIME(_area, _pos, _config) => {},

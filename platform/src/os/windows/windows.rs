@@ -1086,6 +1086,8 @@ impl Cx {
                     }
                 }
                 CxOsOp::Quit => ret = EventFlow::Exit,
+                // Not applied here yet (X11 and Wayland only).
+                CxOsOp::SetMinInnerSize(..) => {}
                 CxOsOp::SetTopmost(window_id, is_topmost) => {
                     if d3d11_windows.len() == 0 {
                         if self.defer_platform_op(CxOsOp::SetTopmost(window_id, is_topmost)) {

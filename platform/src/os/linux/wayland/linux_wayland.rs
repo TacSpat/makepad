@@ -868,6 +868,9 @@ impl WaylandCx {
                     if cx.windows[window_id].backdrop != crate::window::WindowBackdrop::None {
                         log_linux_backdrop_unsupported_once();
                     }
+                    if let Some(min) = cx.windows[window_id].min_inner_size {
+                        window.toplevel.set_min_size(min.x.ceil() as i32, min.y.ceil() as i32);
+                    }
                     // Same as every other backend (x11/windows/macos/...): the Cx window
                     // only becomes usable once its OS window exists. Without `is_created`,
                     // `Cx::dpi_override_scale()` and `get_delegated_dpi_factor()` silently
@@ -978,6 +981,15 @@ impl WaylandCx {
                     if let Some(window) = state.windows.iter().find(|w| w.window_id == window_id) {
                         window.toplevel.unset_maximized();
                         window.toplevel.unset_fullscreen();
+                    }
+                }
+                CxOsOp::SetMinInnerSize(window_id, size) => {
+                    // Surface coordinates are logical points already; 0×0 lifts the limit.
+                    if let Some(window) =
+                        state.windows.iter_mut().find(|w| w.window_id == window_id)
+                    {
+                        let (w, h) = size.map_or((0, 0), |s| (s.x.ceil() as i32, s.y.ceil() as i32));
+                        window.toplevel.set_min_size(w, h);
                     }
                 }
                 CxOsOp::ResizeWindow(window_id, size) => {

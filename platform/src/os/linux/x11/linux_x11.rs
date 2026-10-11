@@ -561,6 +561,9 @@ impl X11Cx {
                     if window.backdrop != crate::window::WindowBackdrop::None {
                         log_linux_backdrop_unsupported_once();
                     }
+                    if window.min_inner_size.is_some() {
+                        opengl_window.xlib_window.set_min_inner_size(window.min_inner_size);
+                    }
                     opengl_windows.push(opengl_window);
                     window.is_created = true;
                 }
@@ -668,6 +671,13 @@ impl X11Cx {
                         opengl_windows.iter_mut().find(|w| w.window_id == window_id)
                     {
                         window.xlib_window.set_inner_size(size);
+                    }
+                }
+                CxOsOp::SetMinInnerSize(window_id, size) => {
+                    if let Some(window) =
+                        opengl_windows.iter_mut().find(|w| w.window_id == window_id)
+                    {
+                        window.xlib_window.set_min_inner_size(size);
                     }
                 }
                 CxOsOp::RepositionWindow(window_id, size) => {

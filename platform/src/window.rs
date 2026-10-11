@@ -799,6 +799,21 @@ impl WindowHandle {
         self.set_window_visuals(cx, visuals);
     }
 
+    /// The smallest inner size the user may resize the window to, in the logical units
+    /// [`Self::resize`] takes (`None` lifts the limit). Kept for a window not yet created
+    /// and applied when it is. X11 and Wayland honor it; other backends ignore it for now.
+    pub fn set_min_inner_size(&self, cx: &mut Cx, size: Option<Vec2d>) {
+        let window_id = self.window_id();
+        let size = size.filter(|s| s.x.is_finite() && s.y.is_finite() && s.x > 0.0 && s.y > 0.0);
+        if cx.windows[window_id].min_inner_size == size {
+            return;
+        }
+        cx.windows[window_id].min_inner_size = size;
+        if cx.windows[window_id].is_created {
+            cx.push_unique_platform_op(CxOsOp::SetMinInnerSize(window_id, size));
+        }
+    }
+
     pub fn resize(&self, cx: &mut Cx, size: Vec2d) {
         cx.push_unique_platform_op(CxOsOp::ResizeWindow(self.window_id(), size));
     }
@@ -846,6 +861,8 @@ pub struct CxWindow {
     pub create_title: String,
     pub create_position: Option<Vec2d>,
     pub create_inner_size: Option<Vec2d>,
+    /// See [`WindowHandle::set_min_inner_size`]; applied at creation and on change.
+    pub min_inner_size: Option<Vec2d>,
     pub create_icon: Option<WindowIcon>,
     pub create_app_id: String,
     pub kind_id: usize,
@@ -877,6 +894,7 @@ impl Default for CxWindow {
             create_title: String::default(),
             create_position: None,
             create_inner_size: None,
+            min_inner_size: None,
             create_icon: None,
             create_app_id: String::default(),
             kind_id: 0,

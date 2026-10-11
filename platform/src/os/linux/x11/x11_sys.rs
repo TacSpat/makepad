@@ -35,6 +35,7 @@ pub const USPosition: c_long = 1 << 0; // user-specified x, y
 pub const USSize: c_long = 1 << 1; // user-specified width, height
 pub const PPosition: c_long = 1 << 2; // program-specified position
 pub const PSize: c_long = 1 << 3; // program-specified size
+pub const PMinSize: c_long = 1 << 4; // program-specified minimum size
 
 pub const VisualIDMask: u32 = 1;
 
@@ -452,6 +453,7 @@ extern "C" {
     pub fn XMoveWindow(display: *mut Display, window: Window, x: c_int, y: c_int);
 
     pub fn XResizeWindow(display: *mut Display, window: Window, width: c_uint, height: c_uint);
+    pub fn XSetWMNormalHints(display: *mut Display, window: Window, hints: *mut XSizeHints);
 
     /// Installs the process-wide handler Xlib calls for a protocol error, returning the
     /// previous one. Without one Xlib uses its default, which prints and calls `exit(1)`.
