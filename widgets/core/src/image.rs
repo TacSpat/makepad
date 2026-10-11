@@ -17,6 +17,7 @@ script_mod! {
     use mod.prelude.widgets_internal.*
 
     mod.widgets.ImageFit = #(ImageFit::script_api(vm))
+    mod.widgets.ImageAnimation = #(ImageAnimation::script_api(vm))
     mod.widgets.ImageSliceEdge = #(ImageSliceEdge::script_api(vm))
     mod.widgets.ImageSliceCenter = #(ImageSliceCenter::script_api(vm))
     mod.widgets.ImageSliceUnits = #(ImageSliceUnits::script_api(vm))
@@ -328,9 +329,11 @@ pub struct DrawImage {
 
 #[derive(Copy, Clone, Debug, Default, Script, ScriptHook)]
 pub enum ImageAnimation {
+    /// Loops at the animation's own frame delays (a GIF as browsers play it).
+    #[default]
+    Natural,
     Stop,
     Once,
-    #[default]
     Loop,
     Bounce,
     #[live(0.0)]
@@ -364,8 +367,11 @@ pub struct Image {
     placeholder_height: u64,
     #[live(1.0)]
     width_scale: f64,
-    #[live(ImageAnimation::BounceFps(25.0))]
+    #[live(ImageAnimation::Natural)]
     animation: ImageAnimation,
+    /// Seconds into the animation, for `ImageAnimation::Natural`.
+    #[rust]
+    animation_time: f64,
     #[rust]
     last_time: Option<f64>,
     #[rust]
@@ -679,6 +685,23 @@ impl Widget for Image {
                     self.last_time = Some(nf.time);
                     let num_frames = animation.num_frames as f64;
                     match self.animation {
+                        ImageAnimation::Natural => {
+                            // Each frame shows for its own delay; a zero (or missing)
+                            // delay counts as 0.1s, as browsers treat it.
+                            let delay = |i: usize| animation.frame_delays.get(i).copied().filter(|d| *d > 0.0).unwrap_or(0.1);
+                            let total: f64 = (0..animation.num_frames).map(delay).sum();
+                            if total > 0.0 {
+                                self.animation_time = (self.animation_time + delta) % total;
+                                let mut t = self.animation_time;
+                                let mut frame = 0;
+                                while frame + 1 < animation.num_frames && t >= delay(frame) {
+                                    t -= delay(frame);
+                                    frame += 1;
+                                }
+                                self.animation_frame = frame as f64;
+                            }
+                            self.next_frame = cx.new_next_frame();
+                        }
                         ImageAnimation::Stop => {}
                         ImageAnimation::Frame(frame) => {
                             self.animation_frame = frame;
