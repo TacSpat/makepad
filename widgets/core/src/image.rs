@@ -381,6 +381,10 @@ pub struct Image {
     visible: bool,
     #[rust]
     next_frame: NextFrame,
+    /// `Natural`: wakes the animation when the shown frame's delay is up
+    /// (asking for every frame in between spins without drawing).
+    #[rust]
+    frame_timer: Timer,
     #[live]
     fit: ImageFit,
     /// How much of the overflow a `CropToFill` picture crops away: one covers
@@ -665,6 +669,10 @@ impl Widget for Image {
                 }
             }
         }
+        if self.frame_timer.is_event(event).is_some() {
+            self.frame_timer = Timer::empty();
+            self.next_frame = cx.new_next_frame();
+        }
         if let Some(nf) = self.next_frame.is_event(event) {
             // compute the next frame and patch things up
             if self.draw_svg.is_some() {
@@ -690,6 +698,7 @@ impl Widget for Image {
                             // delay counts as 0.1s, as browsers treat it.
                             let delay = |i: usize| animation.frame_delays.get(i).copied().filter(|d| *d > 0.0).unwrap_or(0.1);
                             let total: f64 = (0..animation.num_frames).map(delay).sum();
+                            let mut wait = 0.1;
                             if total > 0.0 {
                                 self.animation_time = (self.animation_time + delta) % total;
                                 let mut t = self.animation_time;
@@ -699,8 +708,11 @@ impl Widget for Image {
                                     frame += 1;
                                 }
                                 self.animation_frame = frame as f64;
+                                wait = (delay(frame) - t).max(0.005);
                             }
-                            self.next_frame = cx.new_next_frame();
+                            // Sleep until this frame's delay is up, then take one frame.
+                            cx.stop_timer(self.frame_timer);
+                            self.frame_timer = cx.start_timeout(wait);
                         }
                         ImageAnimation::Stop => {}
                         ImageAnimation::Frame(frame) => {
@@ -987,7 +999,10 @@ impl Image {
                 .unwrap_or((self.placeholder_width as usize, self.placeholder_height as usize));
             if let Some(animation) = image_texture.animation(cx) {
                 let (w, h) = (animation.width as f64, animation.height as f64);
-                self.next_frame = cx.new_next_frame();
+                // Natural paces itself with its timer once started.
+                if !matches!(self.animation, ImageAnimation::Natural) || self.frame_timer.is_empty() {
+                    self.next_frame = cx.new_next_frame();
+                }
                 // we have an animation. lets compute the scale and zoom for a certain frame
                 let scale_x = w as f32 / width as f32;
                 let scale_y = h as f32 / height as f32;
