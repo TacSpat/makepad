@@ -541,6 +541,13 @@ impl XlibApp {
             // report. See `x11_error_handler`.
             x11_sys::XSetErrorHandler(Some(x11_error_handler));
             let display = x11_sys::XOpenDisplay(ptr::null());
+            // No X server at DISPLAY (it closed, or was never there): every
+            // Xlib call after this would dereference null. Say so and stop.
+            if display.is_null() {
+                let name = std::env::var("DISPLAY").unwrap_or_default();
+                eprintln!("Can't open the X display {name:?}: no X server is reachable there. Start the app inside a desktop session, or set DISPLAY (or WAYLAND_DISPLAY) to one that's running.");
+                std::process::exit(1);
+            }
             let display_fd = x11_sys::XConnectionNumber(display);
             x11_sys::setlocale(x11_sys::LC_CTYPE, b"\0".as_ptr() as *const c_char);
             x11_sys::XSetLocaleModifiers(b"\0".as_ptr() as *const c_char);
