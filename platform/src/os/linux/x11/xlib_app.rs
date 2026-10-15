@@ -644,8 +644,9 @@ impl XlibApp {
             match event.type_ as u32 {
                 x11_sys::SelectionNotify => {
                     let selection = event.xselection;
-                    if selection.property == self.dnd.atoms.selection {
-                        self.dnd.handle_selection_event(&selection);
+                    if selection.selection == self.dnd.atoms.selection {
+                        let out = self.dnd.handle_selection_event(&selection);
+                        self.dnd_event(out);
                     } else {
                         // first get the size of the thing
                         let mut actual_type = mem::MaybeUninit::uninit();
@@ -1193,11 +1194,14 @@ impl XlibApp {
                     if event.message_type == self.dnd.atoms.enter {
                         self.dnd.handle_enter_event(&event);
                     } else if event.message_type == self.dnd.atoms.drop {
-                        self.dnd.handle_drop_event(&event);
+                        let out = self.dnd.handle_drop_event(&event);
+                        self.dnd_event(out);
                     } else if event.message_type == self.dnd.atoms.leave {
-                        self.dnd.handle_leave_event(&event);
+                        let out = self.dnd.handle_leave_event(&event);
+                        self.dnd_event(out);
                     } else if event.message_type == self.dnd.atoms.position {
-                        self.dnd.handle_position_event(&event);
+                        let out = self.dnd.handle_position_event(&event);
+                        self.dnd_event(out);
                     }
                 }
                 x11_sys::Expose => {
@@ -1343,6 +1347,39 @@ impl XlibApp {
                 ..Default::default()
             }));
         }
+    }
+
+    /// A drag from another app over one of our windows, or files dropped
+    /// on it: told to the app as Drag and Drop events (logical pixels).
+    /// A drag that left is a Drag far outside, so drop targets stop
+    /// showing.
+    fn dnd_event(&mut self, out: Option<DndOut>) {
+        let Some(out) = out else { return };
+        let (window, x, y, paths) = match out {
+            DndOut::Drag { window, x, y } => (window, x, y, None),
+            DndOut::Drop { window, x, y, paths } => (window, x, y, Some(paths)),
+            DndOut::Leave { window } => (window, -100000, -100000, None),
+        };
+        let Some(window_ptr) = self.window_map.get(&window).copied() else { return };
+        let (window_id, dpi) = unsafe { ((*window_ptr).window_id, (*window_ptr).last_window_geom.dpi_factor) };
+        let abs = Vec2d { x: x as f64 / dpi, y: y as f64 / dpi };
+        let handled = std::sync::Arc::new(std::sync::Mutex::new(false));
+        let event = match paths {
+            Some(paths) => XlibEvent::Drop(window_id, DropEvent {
+                modifiers: Default::default(),
+                handled,
+                abs,
+                items: std::sync::Arc::new(paths.into_iter().map(|path| DragItem::FilePath { path, internal_id: None }).collect()),
+            }),
+            None => XlibEvent::Drag(window_id, DragEvent {
+                modifiers: Default::default(),
+                handled,
+                abs,
+                items: std::sync::Arc::new(Vec::new()),
+                response: std::sync::Arc::new(std::sync::Mutex::new(DragResponse::None)),
+            }),
+        };
+        self.do_callback(event);
     }
 
     pub fn do_callback(&mut self, event: XlibEvent) {

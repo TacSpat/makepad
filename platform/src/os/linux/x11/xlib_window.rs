@@ -1143,6 +1143,21 @@ pub struct Dnd {
     pub display: *mut x11_sys::Display,
     pub type_list: Option<Vec<x11_sys::Atom>>,
     pub selection: Option<CString>,
+    /// The window dragging to us, while a drag is over one of ours.
+    source: Option<x11_sys::Window>,
+    /// The protocol version the source speaks (XdndFinished needs 2+).
+    version: c_long,
+    /// Where the pointer last was, on the root window (physical pixels).
+    root_pos: (c_int, c_int),
+}
+
+/// What a drag-and-drop message means for the app: the pointer over one of
+/// our windows (physical pixels in it), the files dropped there, or the
+/// drag gone.
+pub enum DndOut {
+    Drag { window: x11_sys::Window, x: c_int, y: c_int },
+    Drop { window: x11_sys::Window, x: c_int, y: c_int, paths: Vec<String> },
+    Leave { window: x11_sys::Window },
 }
 
 impl Dnd {
@@ -1152,6 +1167,9 @@ impl Dnd {
             display,
             type_list: None,
             selection: None,
+            source: None,
+            version: 0,
+            root_pos: (0, 0),
         }
     }
 
@@ -1176,6 +1194,10 @@ impl Dnd {
         );
     }
 
+    fn accepts(&self) -> bool {
+        self.type_list.as_ref().map_or(false, |types| types.contains(&self.atoms.uri_list))
+    }
+
     /// Handles a XDndEnter event.
     pub unsafe fn handle_enter_event(&mut self, event: &x11_sys::XClientMessageEvent) {
         // The XDndEnter event is sent by the source window when a drag begins. That is, the mouse
@@ -1184,6 +1206,8 @@ impl Dnd {
 
         let source_window = event.data.l[0] as x11_sys::Window;
         let has_more_types = event.data.l[1] & (1 << 0) != 0;
+        self.source = Some(source_window);
+        self.version = (event.data.l[1] >> 24) & 0xff;
 
         // If the has_more_types flags is set, we have to obtain the list of supported types from
         // the XDndTypeList property. Otherwise, we can obtain the list of supported types from the
@@ -1191,7 +1215,7 @@ impl Dnd {
         self.type_list = Some(if has_more_types {
             self.get_type_list_property(source_window)
         } else {
-            event.data.l[2..4]
+            event.data.l[2..5]
                 .iter()
                 .map(|&l| l as x11_sys::Atom)
                 .filter(|&atom| atom != x11_sys::None as x11_sys::Atom)
@@ -1199,111 +1223,117 @@ impl Dnd {
         });
     }
 
-    /// Handles a XDndDrop event.
-    pub unsafe fn handle_drop_event(&mut self, event: &x11_sys::XClientMessageEvent) {
-        // The XDndLeave event is sent by the source window when a drag is confirmed. That is, the
-        // mouse button is released while the mouse is inside the client rectangle of the target
-        // window. The target window is supposed to respond to this by requesting that the selection
-        // representing the thing being dragged is converted to the appropriate data type (in our
-        // case, a URI list). The source window, in turn, is supposed to respond this by sending a
-        // selection event containing the data to the source window.
-
-        let target_window = event.window as x11_sys::Window;
-        self.convert_selection(target_window);
-        self.type_list = None;
-    }
-
-    /// Handles a XDndLeave event.
-    pub unsafe fn handle_leave_event(&mut self, _event: &x11_sys::XClientMessageEvent) {
-        // The XDndLeave event is sent by the source window when a drag is canceled. That is, the
-        // mouse leaves the client rectangle of the target window. The target window is supposed to
-        // repsond this this by pretending the drag never happened.
-
-        self.type_list = None;
-    }
-
-    /// Handles a XDndPosition event.
-    pub unsafe fn handle_position_event(&mut self, event: &x11_sys::XClientMessageEvent) {
-        // The XDndPosition event is sent by the source window after the XDndEnter event, every time
-        // the mouse is moved. The target window is supposed to respond to this by sending a status
-        // event to the source window notifying whether it can accept the drag at this position.
-
+    /// Handles a XDndPosition event: the pointer moved over `event.window`.
+    pub unsafe fn handle_position_event(&mut self, event: &x11_sys::XClientMessageEvent) -> Option<DndOut> {
+        // The source sends this on every move; we answer whether we'd take a drop here. Files
+        // (a URI list) are taken anywhere; the app decides what to do with them.
         let target_window = event.window as x11_sys::Window;
         let source_window = event.data.l[0] as x11_sys::Window;
-
-        // For now we accept te drag if and only if the list of types supported by the source
-        // includes a uri list.
-        //
-        // TODO: Extend this test by taking into account the position of the mouse as well.
-        let accepted = self
-            .type_list
-            .as_ref()
-            .map_or(false, |type_list| type_list.contains(&self.atoms.uri_list));
-
-        // Notify the source window whether we can accept the drag at this position.
+        self.source = Some(source_window);
+        let packed = event.data.l[2];
+        self.root_pos = (((packed >> 16) & 0xffff) as c_int, (packed & 0xffff) as c_int);
+        let accepted = self.accepts();
         self.send_status_event(source_window, target_window, accepted);
-
-        // If this is the first time we've accepted the drag, request that the drag-and-drop
-        // selection be converted to a URI list. The target window is supposed to respond to this by
-        // sending a XSelectionEvent containing the URI list.
-
-        // Since this is an asynchronous operation, its possible for another XDndPosition event to
-        // come in before the response to the first conversion request has been received. In this
-        // case, a second conversion request will be sent, the response to which will be ignored.
-        if accepted && self.selection.is_none() {}
+        if !accepted {
+            return None;
+        }
+        let (x, y) = self.window_pos(target_window);
+        Some(DndOut::Drag { window: target_window, x, y })
     }
 
-    /// Handles a XSelectionEvent.
-    pub unsafe fn handle_selection_event(&mut self, _event: &x11_sys::XSelectionEvent) {
-        // The XSelectionEvent is sent by the source window in response to a request by the source
-        // window to convert the selection representing the thing being dragged to the appropriate
-        // data type. This request is always sent in response to a XDndDrop event, so this event
-        // should only be received after a drop operation has completed.
-
-        //let source_window = event.requestor;
-        //let selection = CString::new(self.get_selection_property(source_window)).unwrap();
-
-        // TODO: Actually use the selection
+    /// Handles a XDndDrop event: ask the source for its files (they come
+    /// as a SelectionNotify, [`Self::handle_selection_event`]).
+    pub unsafe fn handle_drop_event(&mut self, event: &x11_sys::XClientMessageEvent) -> Option<DndOut> {
+        let target_window = event.window as x11_sys::Window;
+        let source_window = event.data.l[0] as x11_sys::Window;
+        self.source = Some(source_window);
+        if !self.accepts() {
+            self.send_finished_event(source_window, target_window, false);
+            self.type_list = None;
+            return Some(DndOut::Leave { window: target_window });
+        }
+        // The drop's own timestamp, as the protocol asks (CurrentTime is refused by some sources).
+        let time = event.data.l[2] as x11_sys::Time;
+        x11_sys::XConvertSelection(self.display, self.atoms.selection, self.atoms.uri_list, self.atoms.selection, target_window, time);
+        x11_sys::XFlush(self.display);
+        None
     }
 
-    /// Gets the XDndSelection property from the source window.
-    pub unsafe fn get_selection_property(
-        &mut self,
-        source_window: x11_sys::Window,
-    ) -> Vec<std::os::raw::c_uchar> {
+    /// Handles a XDndLeave event: the drag left, or was cancelled.
+    pub unsafe fn handle_leave_event(&mut self, event: &x11_sys::XClientMessageEvent) -> Option<DndOut> {
+        self.type_list = None;
+        self.source = None;
+        Some(DndOut::Leave { window: event.window as x11_sys::Window })
+    }
+
+    /// Handles the SelectionNotify answering a drop: the files, read from
+    /// the property the source wrote on our window.
+    pub unsafe fn handle_selection_event(&mut self, event: &x11_sys::XSelectionEvent) -> Option<DndOut> {
+        let target_window = event.requestor;
+        let source_window = self.source.take()?;
+        self.type_list = None;
+        let data = if event.property == x11_sys::None as x11_sys::Atom {
+            Vec::new()
+        } else {
+            self.get_selection_property(target_window)
+        };
+        let paths = uri_list_paths(&String::from_utf8_lossy(&data));
+        self.send_finished_event(source_window, target_window, !paths.is_empty());
+        if paths.is_empty() {
+            return Some(DndOut::Leave { window: target_window });
+        }
+        let (x, y) = self.window_pos(target_window);
+        Some(DndOut::Drop { window: target_window, x, y, paths })
+    }
+
+    /// The last pointer position, in `window` (physical pixels).
+    unsafe fn window_pos(&self, window: x11_sys::Window) -> (c_int, c_int) {
+        let root = x11_sys::XRootWindow(self.display, x11_sys::XDefaultScreen(self.display));
+        let (mut x, mut y) = (0, 0);
+        let mut child = mem::MaybeUninit::uninit();
+        x11_sys::XTranslateCoordinates(self.display, root, window, self.root_pos.0, self.root_pos.1, &mut x, &mut y, child.as_mut_ptr());
+        (x, y)
+    }
+
+    /// Reads (and deletes) the XdndSelection property from `window`.
+    pub unsafe fn get_selection_property(&mut self, window: x11_sys::Window) -> Vec<u8> {
         let mut selection = Vec::new();
         let mut offset = 0;
         let length = 1024;
-        let mut actual_type = 0;
-        let mut actual_format = 0;
-        let mut nitems = 0;
-        let mut bytes_after = 0;
-        let mut prop = ptr::null_mut();
         loop {
-            x11_sys::XGetWindowProperty(
+            let mut actual_type = 0;
+            let mut actual_format = 0;
+            let mut nitems = 0;
+            let mut bytes_after = 0;
+            let mut prop = ptr::null_mut();
+            let status = x11_sys::XGetWindowProperty(
                 self.display,
-                source_window,
+                window,
                 self.atoms.selection,
                 offset,
                 length,
                 x11_sys::False as std::os::raw::c_int,
-                self.atoms.uri_list,
+                0, // AnyPropertyType
                 &mut actual_type,
                 &mut actual_format,
                 &mut nitems,
                 &mut bytes_after,
                 &mut prop,
             );
-            selection.extend_from_slice(std::slice::from_raw_parts(
-                prop as *mut std::os::raw::c_uchar,
-                nitems as usize,
-            ));
-            x11_sys::XFree(prop as *mut c_void);
-            if bytes_after == 0 {
+            if status != 0 || prop.is_null() {
                 break;
             }
+            if actual_format == 8 {
+                selection.extend_from_slice(std::slice::from_raw_parts(prop as *const u8, nitems as usize));
+            }
+            x11_sys::XFree(prop as *mut c_void);
+            if bytes_after == 0 || actual_format != 8 {
+                break;
+            }
+            // Offsets are in 32-bit units.
             offset += length;
         }
+        x11_sys::XDeleteProperty(self.display, window, self.atoms.selection);
         selection
     }
 
@@ -1335,6 +1365,9 @@ impl Dnd {
                 &mut bytes_after,
                 &mut prop,
             );
+            if prop.is_null() {
+                break;
+            }
             type_list.extend_from_slice(std::slice::from_raw_parts(
                 prop as *mut x11_sys::Atom,
                 nitems as usize,
@@ -1348,16 +1381,36 @@ impl Dnd {
         type_list
     }
 
-    /// Sends a XDndStatus event to the target window.
+    /// Sends a XDndStatus event to the source window.
     pub unsafe fn send_status_event(
         &mut self,
         source_window: x11_sys::Window,
         target_window: x11_sys::Window,
         accepted: bool,
     ) {
+        let mut data = mem::zeroed::<x11_sys::XClientMessageEvent__bindgen_ty_1>();
+        data.l[0] = target_window as c_long;
+        data.l[1] = if accepted { 1 << 0 } else { 0 };
+        // We take the drop as a copy: the source keeps its files.
+        data.l[4] = if accepted { self.atoms.action_copy } else { self.atoms.none } as c_long;
+        self.send_client_message(source_window, self.atoms.status, data);
+    }
+
+    /// Sends a XDndFinished event: the drop is done with.
+    unsafe fn send_finished_event(&mut self, source_window: x11_sys::Window, target_window: x11_sys::Window, accepted: bool) {
+        let mut data = mem::zeroed::<x11_sys::XClientMessageEvent__bindgen_ty_1>();
+        data.l[0] = target_window as c_long;
+        if self.version >= 5 {
+            data.l[1] = if accepted { 1 << 0 } else { 0 };
+            data.l[2] = if accepted { self.atoms.action_copy } else { self.atoms.none } as c_long;
+        }
+        self.send_client_message(source_window, self.atoms.finished, data);
+    }
+
+    unsafe fn send_client_message(&mut self, window: x11_sys::Window, message_type: x11_sys::Atom, data: x11_sys::XClientMessageEvent__bindgen_ty_1) {
         x11_sys::XSendEvent(
             self.display,
-            source_window,
+            window,
             x11_sys::False as std::os::raw::c_int,
             x11_sys::NoEventMask as std::os::raw::c_long,
             &mut x11_sys::XClientMessageEvent {
@@ -1365,43 +1418,77 @@ impl Dnd {
                 serial: 0,
                 send_event: 0,
                 display: self.display,
-                window: source_window,
-                message_type: self.atoms.status,
+                window,
+                message_type,
                 format: 32,
-                data: {
-                    let mut data = mem::zeroed::<x11_sys::XClientMessageEvent__bindgen_ty_1>();
-                    data.l[0] = target_window as c_long;
-                    data.l[1] = if accepted { 1 << 0 } else { 0 };
-                    data.l[2] = 0;
-                    data.l[3] = 0;
-                    data.l[4] = if accepted {
-                        self.atoms.action_private
-                    } else {
-                        self.atoms.none
-                    } as c_long;
-                    data
-                },
+                data,
             } as *mut x11_sys::XClientMessageEvent as *mut x11_sys::XEvent,
         );
         x11_sys::XFlush(self.display);
     }
+}
 
-    // Requests that the selection representing the thing being dragged is converted to the
-    // appropriate data type (in our case, a URI list).
-    pub unsafe fn convert_selection(&self, target_window: x11_sys::Window) {
-        x11_sys::XConvertSelection(
-            self.display,
-            self.atoms.selection,
-            self.atoms.uri_list,
-            self.atoms.selection,
-            target_window,
-            x11_sys::CurrentTime as x11_sys::Time,
-        );
+/// The local files in a `text/uri-list` (RFC 2483): one URI a line,
+/// `#` lines are comments; `file://` URIs (an empty or `localhost` host)
+/// percent-decoded to paths. Anything else is left out.
+pub fn uri_list_paths(list: &str) -> Vec<String> {
+    list.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|uri| {
+            let rest = uri.strip_prefix("file://")?;
+            let path = if rest.starts_with('/') {
+                rest
+            } else {
+                let (host, path) = rest.split_at(rest.find('/')?);
+                if !host.eq_ignore_ascii_case("localhost") {
+                    return None;
+                }
+                path
+            };
+            percent_decode(path)
+        })
+        .collect()
+}
+
+fn percent_decode(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+#[cfg(test)]
+mod dnd_tests {
+    use super::uri_list_paths;
+
+    #[test]
+    fn a_file_managers_uri_list_becomes_paths() {
+        let list = "# from nautilus\r\nfile:///home/me/Pictures/My%20Cat.png\r\nfile://localhost/tmp/a%23b.txt\r\nhttps://example.com/x\r\nfile://otherhost/c\r\n\r\n";
+        assert_eq!(uri_list_paths(list), vec!["/home/me/Pictures/My Cat.png".to_owned(), "/tmp/a#b.txt".to_owned()]);
+    }
+
+    #[test]
+    fn non_ascii_names_decode() {
+        assert_eq!(uri_list_paths("file:///tmp/%C3%A9t%C3%A9.jpg"), vec!["/tmp/été.jpg".to_owned()]);
+        assert!(uri_list_paths("file:///tmp/bad%zz").is_empty());
     }
 }
 
 pub struct DndAtoms {
+    pub action_copy: x11_sys::Atom,
     pub action_private: x11_sys::Atom,
+    pub finished: x11_sys::Atom,
     pub aware: x11_sys::Atom,
     pub drop: x11_sys::Atom,
     pub enter: x11_sys::Atom,
@@ -1417,6 +1504,8 @@ pub struct DndAtoms {
 impl DndAtoms {
     pub unsafe fn new(display: *mut x11_sys::Display) -> DndAtoms {
         DndAtoms {
+            action_copy: x11_sys::XInternAtom(display, "XdndActionCopy\0".as_ptr() as *const _, 0),
+            finished: x11_sys::XInternAtom(display, "XdndFinished\0".as_ptr() as *const _, 0),
             action_private: x11_sys::XInternAtom(
                 display,
                 "XdndActionPrivate\0".as_ptr() as *const _,

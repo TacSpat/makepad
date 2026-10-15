@@ -542,6 +542,8 @@ extern "C" {
         arg6: Time,
     ) -> c_int;
 
+    pub fn XDeleteProperty(arg1: *mut Display, arg2: Window, arg3: Atom) -> c_int;
+
     pub fn XSetInputFocus(arg1: *mut Display, arg2: Window, arg3: c_int, arg4: Time) -> c_int;
 
     pub fn XGrabPointer(
