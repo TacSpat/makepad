@@ -242,14 +242,14 @@ script_mod! {
 
                 let fill = color_fill
                     .mix(color_fill_empty, self.empty)
-                    .mix(color_fill_focus, self.focus)
                     .mix(color_fill_hover.mix(color_fill_down, self.down), self.hover)
+                    .mix(color_fill_focus, self.focus)
                     .mix(color_fill_disabled, self.disabled)
 
                 let stroke = color_stroke
                     .mix(color_stroke_empty, self.empty)
-                    .mix(color_stroke_focus, self.focus)
                     .mix(color_stroke_hover.mix(color_stroke_down, self.down), self.hover)
+                    .mix(color_stroke_focus, self.focus)
                     .mix(color_stroke_disabled, self.disabled)
 
                 sdf.fill_keep(fill)
@@ -366,8 +366,8 @@ script_mod! {
 
                 let fill = color_fill
                     .mix(color_fill_empty, self.empty)
-                    .mix(color_fill_focus, self.focus)
                     .mix(color_fill_hover.mix(color_fill_down, self.down), self.hover)
+                    .mix(color_fill_focus, self.focus)
                     .mix(color_fill_disabled, self.disabled)
 
                 sdf.fill(fill)

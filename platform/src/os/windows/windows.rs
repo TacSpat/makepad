@@ -1441,9 +1441,25 @@ impl CxOsApi for Cx {
             .as_secs_f64()
     }
 
-    fn open_url(&mut self, _url: &str, _in_place: OpenUrlInPlace) {
+    fn open_url(&mut self, url: &str, _in_place: OpenUrlInPlace) {
         if self.script_data.std.host_io_only() { return; }
-        crate::error!("open_url not implemented on this platform");
+        // Web and mail links only: Windows' URL handler also runs local
+        // programs and files, and links come from other people's messages.
+        let lower = url.trim_start().to_ascii_lowercase();
+        if !["http://", "https://", "mailto:"].iter().any(|s| lower.starts_with(s)) {
+            crate::error!("open_url: not a web or mail link, not opened: {url}");
+            return;
+        }
+        // The default browser (or mail app), as Linux's xdg-open and macOS's
+        // open; url.dll's handler takes the URL as one argument, no shell
+        // parsing (cmd's `start` would split it at `&`).
+        let opened = std::process::Command::new("rundll32.exe")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(url.trim())
+            .spawn();
+        if let Err(e) = opened {
+            crate::error!("open_url: couldn't open {url}: {e}");
+        }
     }
 }
 
