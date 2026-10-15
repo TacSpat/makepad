@@ -30,7 +30,27 @@ impl LinuxHttpSocket {
 
         std::thread::spawn(move || {
             let metadata_id = request.metadata_id;
-            let result = run_http_request(request_id, &request, &response_sender, &cancel_flag);
+            // Redirects are followed here, as the other platforms' HTTP
+            // stacks (WinHTTP, NSURLSession) do: Blossom servers answer a
+            // blob's GET with a 302 to their storage.
+            let mut request = request;
+            let mut hops = 0;
+            let result = loop {
+                match run_http_request(request_id, &request, &response_sender, &cancel_flag) {
+                    Ok(None) => break Ok(()),
+                    Ok(Some((status, location))) => {
+                        hops += 1;
+                        if hops > MAX_REDIRECTS {
+                            break Err(format!("too many redirects (more than {MAX_REDIRECTS})"));
+                        }
+                        match redirected(&request, status, &location) {
+                            Some(next) => request = next,
+                            None => break Err(format!("refused redirect to {location}")),
+                        }
+                    }
+                    Err(e) => break Err(e),
+                }
+            };
 
             cancellation_map().lock().unwrap().remove(&request_id);
 
@@ -63,7 +83,7 @@ fn run_http_request(
     request: &HttpRequest,
     response_sender: &Sender<NetworkResponse>,
     cancel_flag: &AtomicBool,
-) -> Result<(), String> {
+) -> Result<Option<(u16, String)>, String> {
     let split = request.split_url();
     let use_tls = match split.proto {
         "http" => false,
@@ -94,6 +114,12 @@ fn run_http_request(
             }
             Err(ReadHeadError::Io(error)) => return Err(format!("read failed: {error}")),
         };
+    if matches!(status_code, 301 | 302 | 303 | 307 | 308) {
+        if let Some(location) = header_of(&headers_string, "location").filter(|l| !l.is_empty()) {
+            stream.shutdown();
+            return Ok(Some((status_code, location.to_owned())));
+        }
+    }
     let declared = content_length_of(&headers_string);
     if (!matches!(request.method, crate::types::HttpMethod::HEAD) && declared > max_body)
         || body_prefix.len() as u64 > max_body
@@ -164,7 +190,7 @@ fn run_http_request(
             ),
         });
         stream.shutdown();
-        return Ok(());
+        return Ok(None);
     }
 
     let mut body = std::mem::take(&mut body_prefix);
@@ -234,7 +260,7 @@ fn run_http_request(
             Some(body),
         ),
     });
-    Ok(())
+    Ok(None)
 }
 
 fn write_request(
@@ -417,6 +443,62 @@ fn write_all(stream: &mut SocketStream, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// How many redirects one request follows (curl's and browsers' limits are
+/// higher; a chain this long is a loop).
+const MAX_REDIRECTS: u32 = 5;
+
+/// The first value of a header, by name.
+fn header_of<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
+    headers.lines().find_map(|line| {
+        let (n, value) = line.split_once(':')?;
+        n.trim().eq_ignore_ascii_case(name).then(|| value.trim())
+    })
+}
+
+/// The request a redirect to `location` makes, as the Fetch standard has it:
+/// a 303 (and a 301/302 after a POST) turns into a GET without a body;
+/// otherwise the method and body are repeated. Never from https to http, and
+/// the credentials (Authorization, Cookie) stay with the host they were meant
+/// for. `None`: not a URL we'll follow.
+fn redirected(request: &HttpRequest, status: u16, location: &str) -> Option<HttpRequest> {
+    let split = request.split_url();
+    let url = if location.starts_with("https://") || location.starts_with("http://") {
+        location.to_owned()
+    } else if location.starts_with("//") {
+        format!("{}:{location}", split.proto)
+    } else if location.starts_with('/') {
+        let default_port = matches!((split.proto, split.port), ("https", "443") | ("http", "80"));
+        let authority = if default_port { split.host.to_owned() } else { format!("{}:{}", split.host, split.port) };
+        format!("{}://{authority}{location}", split.proto)
+    } else {
+        // A path relative to the current one.
+        let base = request.url.split(['?', '#']).next().unwrap_or(&request.url);
+        let dir = base.rsplit_once('/').map(|(d, _)| d).unwrap_or(base);
+        format!("{dir}/{location}")
+    };
+    if split.proto == "https" && !url.starts_with("https://") {
+        return None;
+    }
+    let mut next = request.clone();
+    next.url = url;
+    let same_host = {
+        let to = next.split_url();
+        to.host.eq_ignore_ascii_case(split.host) && to.port == split.port
+    };
+    if !same_host {
+        next.headers.retain(|k, _| !k.eq_ignore_ascii_case("authorization") && !k.eq_ignore_ascii_case("cookie"));
+    }
+    use crate::types::HttpMethod;
+    let to_get = (status == 303 && !matches!(request.method, HttpMethod::GET | HttpMethod::HEAD))
+        || (matches!(status, 301 | 302) && matches!(request.method, HttpMethod::POST));
+    if to_get {
+        next.method = HttpMethod::GET;
+        next.body = None;
+        next.headers.retain(|k, _| !k.eq_ignore_ascii_case("content-type") && !k.eq_ignore_ascii_case("content-length"));
+    }
+    Some(next)
+}
+
 fn content_length_of(headers: &str) -> u64 {
     headers.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
@@ -463,4 +545,68 @@ fn find_crlf(data: &[u8], start: usize) -> Option<usize> {
         .windows(2)
         .position(|w| w == b"\r\n")
         .map(|p| start + p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::HttpMethod;
+
+    fn req(url: &str, method: HttpMethod) -> HttpRequest {
+        let mut r = HttpRequest::new(url.to_owned(), method);
+        r.set_header("Authorization".into(), "Nostr x".into());
+        r.set_header("User-Agent".into(), "t".into());
+        r
+    }
+
+    #[test]
+    fn a_blob_get_follows_to_its_storage() {
+        let r = req("https://blossom.primal.net/abc.png", HttpMethod::GET);
+        let next = redirected(&r, 302, "https://r2a.primal.net/uploads2/abc.png").unwrap();
+        assert_eq!(next.url, "https://r2a.primal.net/uploads2/abc.png");
+        assert!(matches!(next.method, HttpMethod::GET));
+        // Another host: the credentials stay behind, the rest goes along.
+        assert!(!next.headers.contains_key("Authorization"));
+        assert!(next.headers.contains_key("User-Agent"));
+    }
+
+    #[test]
+    fn relative_locations_resolve_against_the_request() {
+        let r = req("https://example.com:8443/a/b?x=1", HttpMethod::GET);
+        assert_eq!(redirected(&r, 301, "/c").unwrap().url, "https://example.com:8443/c");
+        assert_eq!(redirected(&r, 301, "d").unwrap().url, "https://example.com:8443/a/d");
+        assert_eq!(redirected(&r, 301, "//cdn.example.com/e").unwrap().url, "https://cdn.example.com/e");
+        let plain = req("https://example.com/a", HttpMethod::GET);
+        assert_eq!(redirected(&plain, 302, "/b").unwrap().url, "https://example.com/b");
+        // Same host: the credentials go along.
+        assert!(redirected(&plain, 302, "/b").unwrap().headers.contains_key("Authorization"));
+    }
+
+    #[test]
+    fn never_from_https_to_http() {
+        let r = req("https://example.com/a", HttpMethod::GET);
+        assert!(redirected(&r, 302, "http://example.com/a").is_none());
+        assert!(redirected(&req("http://example.com/a", HttpMethod::GET), 302, "https://example.com/a").is_some());
+    }
+
+    #[test]
+    fn methods_change_as_the_fetch_standard_says() {
+        let mut post = req("https://example.com/a", HttpMethod::POST);
+        post.set_body(b"x".to_vec());
+        let to_get = redirected(&post, 302, "/b").unwrap();
+        assert!(matches!(to_get.method, HttpMethod::GET) && to_get.body.is_none());
+        let kept = redirected(&post, 307, "/b").unwrap();
+        assert!(matches!(kept.method, HttpMethod::POST) && kept.body.is_some());
+        // A Blossom upload (PUT) stays a PUT on a 302; a 303 makes it a GET.
+        let put = req("https://example.com/upload", HttpMethod::PUT);
+        assert!(matches!(redirected(&put, 302, "/up2").unwrap().method, HttpMethod::PUT));
+        assert!(matches!(redirected(&put, 303, "/done").unwrap().method, HttpMethod::GET));
+    }
+
+    #[test]
+    fn location_is_read_from_the_headers() {
+        let h = "Content-Type: image/png\nLocation: https://x.example/a\n";
+        assert_eq!(header_of(h, "location"), Some("https://x.example/a"));
+        assert_eq!(header_of(h, "etag"), None);
+    }
 }
