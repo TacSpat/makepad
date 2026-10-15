@@ -291,6 +291,11 @@ pub struct Win32App {
     pub event_flow: EventFlow,
     pub dpi_functions: DpiFunctions,
     pub current_cursor: Option<MouseCursor>,
+    /// The cursor the app last asked for. Windows sends WM_SETCURSOR on every
+    /// move over the window and would otherwise put the class arrow back over
+    /// it; the window answers with this one while the pointer is in the client
+    /// area (`apply_wanted_cursor`).
+    pub wanted_cursor: MouseCursor,
     pub currently_clicked_window_id: Option<WindowId>,
     pub start_dragging_items: Option<Vec<DragItem>>,
     pub is_dragging_internal: Cell<bool>,
@@ -439,6 +444,7 @@ impl Win32App {
             timers: Vec::new(),
             dpi_functions: DpiFunctions::new(),
             current_cursor: None,
+            wanted_cursor: MouseCursor::Default,
             currently_clicked_window_id: None,
             is_dragging_internal: Cell::new(false),
             beat_handles: Vec::new(),
@@ -998,39 +1004,44 @@ impl Win32App {
         self.time.time_now()
     }
 
+    fn win32_cursor(cursor: MouseCursor) -> PCWSTR {
+        match cursor {
+            MouseCursor::Hidden => PCWSTR::null(),
+            MouseCursor::Default => IDC_ARROW,
+            MouseCursor::Crosshair => IDC_CROSS,
+            MouseCursor::Hand => IDC_HAND,
+            // Default to Hand for non-supported cursors, until we include our own custom cursor files.
+            MouseCursor::Grab | MouseCursor::Grabbing => IDC_HAND,
+            MouseCursor::Arrow => IDC_ARROW,
+            MouseCursor::Move => IDC_SIZEALL,
+            MouseCursor::Text => IDC_IBEAM,
+            MouseCursor::Wait => IDC_ARROW,
+            MouseCursor::Help => IDC_HELP,
+            MouseCursor::NotAllowed => IDC_NO,
+
+            MouseCursor::EResize => IDC_SIZEWE,
+            MouseCursor::NResize => IDC_SIZENS,
+            MouseCursor::NeResize => IDC_SIZENESW,
+            MouseCursor::NwResize => IDC_SIZENWSE,
+            MouseCursor::SResize => IDC_SIZENS,
+            MouseCursor::SeResize => IDC_SIZENWSE,
+            MouseCursor::SwResize => IDC_SIZENESW,
+            MouseCursor::WResize => IDC_SIZEWE,
+
+            MouseCursor::NsResize => IDC_SIZENS,
+            MouseCursor::NeswResize => IDC_SIZENESW,
+            MouseCursor::EwResize => IDC_SIZEWE,
+            MouseCursor::NwseResize => IDC_SIZENWSE,
+
+            MouseCursor::ColResize => IDC_SIZEWE,
+            MouseCursor::RowResize => IDC_SIZENS,
+        }
+    }
+
     pub fn set_mouse_cursor(&mut self, cursor: MouseCursor) {
+        self.wanted_cursor = cursor;
         if self.current_cursor.is_none() || self.current_cursor.unwrap() != cursor {
-            let win32_cursor = match cursor {
-                MouseCursor::Hidden => PCWSTR::null(),
-                MouseCursor::Default => IDC_ARROW,
-                MouseCursor::Crosshair => IDC_CROSS,
-                MouseCursor::Hand => IDC_HAND,
-                // Default to Hand for non-supported cursors, until we include our own custom cursor files.
-                MouseCursor::Grab | MouseCursor::Grabbing => IDC_HAND,
-                MouseCursor::Arrow => IDC_ARROW,
-                MouseCursor::Move => IDC_SIZEALL,
-                MouseCursor::Text => IDC_IBEAM,
-                MouseCursor::Wait => IDC_ARROW,
-                MouseCursor::Help => IDC_HELP,
-                MouseCursor::NotAllowed => IDC_NO,
-
-                MouseCursor::EResize => IDC_SIZEWE,
-                MouseCursor::NResize => IDC_SIZENS,
-                MouseCursor::NeResize => IDC_SIZENESW,
-                MouseCursor::NwResize => IDC_SIZENWSE,
-                MouseCursor::SResize => IDC_SIZENS,
-                MouseCursor::SeResize => IDC_SIZENWSE,
-                MouseCursor::SwResize => IDC_SIZENESW,
-                MouseCursor::WResize => IDC_SIZEWE,
-
-                MouseCursor::NsResize => IDC_SIZENS,
-                MouseCursor::NeswResize => IDC_SIZENESW,
-                MouseCursor::EwResize => IDC_SIZEWE,
-                MouseCursor::NwseResize => IDC_SIZENWSE,
-
-                MouseCursor::ColResize => IDC_SIZEWE,
-                MouseCursor::RowResize => IDC_SIZENS,
-            };
+            let win32_cursor = Self::win32_cursor(cursor);
             self.current_cursor = Some(cursor);
             unsafe {
                 if win32_cursor == PCWSTR::null() {
@@ -1040,8 +1051,21 @@ impl Win32App {
                     ShowCursor(true);
                 }
             }
-            //TODO
         }
+    }
+
+    /// WM_SETCURSOR over the client area: show the cursor the app asked for
+    /// (a text box's I-beam, a link's hand) instead of the class arrow.
+    pub fn apply_wanted_cursor(&mut self) {
+        let win32_cursor = Self::win32_cursor(self.wanted_cursor);
+        unsafe {
+            if win32_cursor == PCWSTR::null() {
+                SetCursor(None);
+            } else {
+                SetCursor(LoadCursorW(None, win32_cursor).ok());
+            }
+        }
+        self.current_cursor = Some(self.wanted_cursor);
     }
 }
 
