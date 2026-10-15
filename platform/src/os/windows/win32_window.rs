@@ -90,7 +90,7 @@ use {
                         WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP,
                         WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
                         WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_RBUTTONDOWN, WM_RBUTTONUP,
-                        WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
+                        WM_SETCURSOR, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
                         GetWindowPlacement, WINDOWPLACEMENT,
                         WS_BORDER, WS_CAPTION, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_ACCEPTFILES,
                         WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
@@ -514,21 +514,13 @@ impl Win32Window {
             }
         };
         match response_val {
-            WindowDragQueryResponse::Caption => {
-                with_win32_app(|app| app.set_mouse_cursor(MouseCursor::Default));
-                LRESULT(HTCAPTION as isize)
-            }
-            WindowDragQueryResponse::SysMenu => {
-                with_win32_app(|app| app.set_mouse_cursor(MouseCursor::Default));
-                LRESULT(HTSYSMENU as isize)
-            }
+            // The cursor itself is chosen in WM_SETCURSOR, from this hit: the
+            // system's arrow and resize arrows outside the client area, the
+            // app's own cursor inside it. Setting Default here (on every move)
+            // undid a text box's I-beam, which widgets only set on hover-in.
+            WindowDragQueryResponse::Caption => LRESULT(HTCAPTION as isize),
+            WindowDragQueryResponse::SysMenu => LRESULT(HTSYSMENU as isize),
             WindowDragQueryResponse::Client | WindowDragQueryResponse::NoAnswer => {
-                // Caption already restores Default above. Client must too: after
-                // HTLEFT/HTRIGHT the system size cursor sticks otherwise, and the
-                // window class cursor alone is not enough once we cleared
-                // `current_cursor` on the resize edge. Widgets re-apply Text/etc.
-                // on the following WM_MOUSEMOVE.
-                with_win32_app(|app| app.set_mouse_cursor(MouseCursor::Default));
                 LRESULT(HTCLIENT as isize)
             }
         }
@@ -843,6 +835,19 @@ impl Win32Window {
                 return window.hit_test_extended_client(lparam);
             }
             WM_ERASEBKGND => return LRESULT(1),
+            WM_SETCURSOR => {
+                // Sent on every move with WM_NCHITTEST's answer in the low word.
+                // Over the client area, show the app's cursor (DefWindowProc
+                // would put the class arrow back); elsewhere (caption, resize
+                // edges) let the system pick, and forget what's showing so the
+                // app's next cursor is set again.
+                if (lparam.0 & 0xffff) as isize == HTCLIENT as isize {
+                    with_win32_app(|app| app.apply_wanted_cursor());
+                    return LRESULT(1);
+                }
+                with_win32_app(|app| app.current_cursor = None);
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
             WM_MOUSEMOVE => {
                 if with_win32_app(|app| app.start_dragging_items.is_some()) {
                     return LRESULT(0);
