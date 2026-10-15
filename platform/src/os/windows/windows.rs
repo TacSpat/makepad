@@ -1445,20 +1445,41 @@ impl CxOsApi for Cx {
         if self.script_data.std.host_io_only() { return; }
         // Web and mail links only: Windows' URL handler also runs local
         // programs and files, and links come from other people's messages.
-        let lower = url.trim_start().to_ascii_lowercase();
+        // A real link has no spaces, quotes or control characters (they're
+        // percent-encoded); one that does isn't passed on.
+        let url = url.trim();
+        let lower = url.to_ascii_lowercase();
         if !["http://", "https://", "mailto:"].iter().any(|s| lower.starts_with(s)) {
             crate::error!("open_url: not a web or mail link, not opened: {url}");
             return;
         }
+        if url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '"') {
+            crate::error!("open_url: a link with spaces, quotes or control characters, not opened");
+            return;
+        }
         // The default browser (or mail app), as Linux's xdg-open and macOS's
-        // open; url.dll's handler takes the URL as one argument, no shell
-        // parsing (cmd's `start` would split it at `&`).
-        let opened = std::process::Command::new("rundll32.exe")
-            .arg("url.dll,FileProtocolHandler")
-            .arg(url.trim())
-            .spawn();
-        if let Err(e) = opened {
-            crate::error!("open_url: couldn't open {url}: {e}");
+        // open, straight through the shell API: no helper process (antivirus
+        // watches rundll32 handing out URLs) and no command line to parse.
+        #[link(name = "shell32")]
+        extern "system" {
+            fn ShellExecuteW(
+                hwnd: *mut std::ffi::c_void,
+                operation: *const u16,
+                file: *const u16,
+                parameters: *const u16,
+                directory: *const u16,
+                show_cmd: i32,
+            ) -> isize;
+        }
+        const SW_SHOWNORMAL: i32 = 1;
+        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (operation, file) = (wide("open"), wide(url));
+        // Above 32 is success; 32 or less is an error code.
+        let result = unsafe {
+            ShellExecuteW(std::ptr::null_mut(), operation.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL)
+        };
+        if result <= 32 {
+            crate::error!("open_url: couldn't open {url} (ShellExecute error {result})");
         }
     }
 }
