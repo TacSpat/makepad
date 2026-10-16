@@ -140306,6 +140306,7 @@ pub const WM_NCHITTEST: u32 = 132u32;
 pub const WM_QUIT: u32 = 18u32;
 pub const WM_RBUTTONDOWN: u32 = 516u32;
 pub const WM_RBUTTONUP: u32 = 517u32;
+pub const WM_SETCURSOR: u32 = 32u32;
 pub const WM_SIZE: u32 = 5u32;
 pub const WM_SYSKEYDOWN: u32 = 260u32;
 pub const WM_SYSKEYUP: u32 = 261u32;
